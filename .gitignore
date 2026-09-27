@@ -1,0 +1,6 @@
+os/*.elf
+os/*.bin
+os/*.map
+.DS_Store
+*.pyc
+__pycache__/
