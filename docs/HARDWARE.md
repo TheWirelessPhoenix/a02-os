@@ -65,7 +65,12 @@ Recovery mode leaves the CPU on DEVPLL at 48 MHz. A02-OS runs the CPU from COREP
   headphones in ≈ 700. The stock firmware splits the bands at 784 with an 11-poll debounce. Readings are
   only valid after the ladder ADC is initialized and has settled.
 - Battery ADC: PMU `0xC001003C`.
-- Volume rocker: not found yet.
+- **Volume**: per AGPTEK's official A02 manual there is **no separate rocker** — "Volume +" is the
+  **M** button and "Volume −" is **Down/Back**, both already on the ladder. (Hold VOL, then M/Vol to
+  adjust; an "easy mode" uses M/Vol directly.) A couple of register scans found no extra volume
+  input, consistent with this. If a variant has a real side rocker, its input register is still
+  unknown — a RAM-only probe (`os/a02os/src/keyprobe.c`, `make run-keyprobe`) logs PMU/GPIO changes
+  while buttons are pressed and is the tool to use.
 
 ## microSD
 
