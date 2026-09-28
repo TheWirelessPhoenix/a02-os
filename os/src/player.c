@@ -3,6 +3,8 @@
 #include "player.h"
 #include "audio.h"
 #include "keys.h"
+#include "guard.h"
+#include "powermenu.h"
 #include "ff.h"
 
 #define MINIMP3_IMPLEMENTATION
@@ -125,15 +127,11 @@ static void levels(struct player_ui *ui, const int16_t *s, int frames)
 	ui->on_levels(lv, NBANDS);
 }
 
-static int handle_keys(struct player_ui *ui, int *paused)
+static uint32_t cur_hz; /* rate of the playing track, for restarting output after a pause */
+
+static int other_key(struct player_ui *ui, int k)
 {
-	int k = keys_poll();
 	switch (k) {
-	case KEY_PLAY:
-		*paused = !*paused;
-		if (ui->on_pause)
-			ui->on_pause(*paused);
-		return PLAYER_CONTINUE;
 	case KEY_NEXT:
 		return PLAYER_NEXT;
 	case KEY_PREV:
@@ -144,15 +142,84 @@ static int handle_keys(struct player_ui *ui, int *paused)
 	case KEY_DOWN:
 		if (ui->on_key)
 			ui->on_key(k);
-		return PLAYER_CONTINUE;
+		break;
 	}
 	return PLAYER_CONTINUE;
+}
+
+/* Paused: output halted at once (reload-mode DMA would otherwise keep replaying). Only an
+ * explicit Play resumes, and only onto an audible route (phones, or a speaker armed by that
+ * Play with the jack settled empty). Jack changes while paused never resume anything. */
+static int pause_loop(struct player_ui *ui)
+{
+	audio_halt();
+	guard_quiet();
+	if (ui->on_pause)
+		ui->on_pause(1);
+	for (;;) {
+		guard_poll();
+		guard_take_event();
+		int k = keys_poll();
+		if (k == KEY_PLAY) {
+			guard_user_play();
+			if (!guard_must_pause())
+				break;
+		} else if (k == KEY_POWER) {
+			powermenu();
+			if (ui->on_start)
+				ui->on_start(cur_hz, 0, 0);
+			if (ui->on_pause)
+				ui->on_pause(1);
+		} else if (k != KEY_NONE) {
+			int r = other_key(ui, k);
+			if (r != PLAYER_CONTINUE)
+				return r;
+		}
+		delay(1);
+	}
+	/* Full DAC + DMA re-setup, as for a new track: a channel halted mid-buffer is not
+	 * guaranteed to restart from just a new source address (it froze the player). */
+	audio_start(cur_hz);
+	if (ui->on_pause)
+		ui->on_pause(0);
+	return PLAYER_CONTINUE;
+}
+
+/* Hold Back: silence first, then the POWER menu; cancel repaints and stays paused. */
+static int power_key(struct player_ui *ui)
+{
+	audio_halt();
+	guard_quiet();
+	powermenu();
+	if (ui->on_start)
+		ui->on_start(cur_hz, 0, 0); /* both players' start callbacks just repaint */
+	return pause_loop(ui);
+}
+
+/* After each queued buffer: jack guard first, then keys. */
+static int after_queue(struct player_ui *ui, int queued)
+{
+	guard_poll();
+	if (queued < 0 || guard_must_pause())
+		return pause_loop(ui);
+	int k = keys_poll();
+	if (k == KEY_PLAY)
+		return pause_loop(ui);
+	if (k == KEY_POWER)
+		return power_key(ui);
+	return other_key(ui, k);
+}
+
+static int guard_hook(void)
+{
+	guard_poll();
+	return guard_must_pause();
 }
 
 static int play_mp3(struct player_ui *ui)
 {
 	uint32_t fill = 0, total = (uint32_t)f_size(&fil), pos;
-	int b = 0, started = 0, eof = 0, paused = 0, r = PLAYER_DONE;
+	int b = 0, started = 0, eof = 0, r = PLAYER_DONE;
 	mp3dec_frame_info_t info;
 	UINT br;
 
@@ -185,7 +252,8 @@ static int play_mp3(struct player_ui *ui)
 		if (!started) {
 			if (info.bitrate_kbps)
 				player_total_secs = (total - (uint32_t)f_tell(&fil)) / ((uint32_t)info.bitrate_kbps * 125);
-			audio_start((uint32_t)info.hz);
+			cur_hz = (uint32_t)info.hz;
+			audio_start(cur_hz);
 			if (ui->on_start)
 				ui->on_start((uint32_t)info.hz, (uint32_t)info.channels, (uint32_t)info.bitrate_kbps);
 			started = 1;
@@ -197,19 +265,14 @@ static int play_mp3(struct player_ui *ui)
 		} else {
 			memcpy(p, out, (size_t)samples * 4);
 		}
-		audio_queue(p, (uint32_t)samples * 4);
+		int q = audio_queue(p, (uint32_t)samples * 4);
 		b = (b + 1) % 3;
 		frames_played += (uint32_t)samples;
 		player_secs = frames_played / (uint32_t)info.hz;
 		levels(ui, p, samples);
 		if (ui->on_progress)
 			ui->on_progress(pos - fill, total);
-		while (1) {
-			r = handle_keys(ui, &paused);
-			if (r != PLAYER_CONTINUE || !paused)
-				break;
-			wdt_feed();
-		}
+		r = after_queue(ui, q);
 		if (r != PLAYER_CONTINUE)
 			break;
 		r = PLAYER_DONE;
@@ -222,32 +285,39 @@ static int play_wav(struct player_ui *ui)
 {
 	uint8_t hdr[44];
 	UINT br;
-	int b = 0, paused = 0, r = PLAYER_DONE;
+	int b = 0, r = PLAYER_DONE;
 
 	if (f_read(&fil, hdr, 44, &br) != FR_OK || br != 44 || memcmp(hdr, "RIFF", 4) || memcmp(hdr + 8, "WAVE", 4))
 		return PLAYER_ERROR;
 	uint32_t rate = hdr[24] | hdr[25] << 8 | hdr[26] << 16 | (uint32_t)hdr[27] << 24;
+	uint32_t ch = hdr[22], bits = hdr[34];
+	if ((ch != 1 && ch != 2) || bits != 16 || !rate)
+		return PLAYER_ERROR;
+	uint32_t frame = ch * 2; /* bytes per file frame: mono recorder files are 2, stereo 4 */
 	uint32_t total = (uint32_t)f_size(&fil), pos = 44;
-	player_total_secs = (total - 44) / (rate * 4);
+	player_total_secs = (total - 44) / (rate * frame);
+	cur_hz = rate;
 	audio_start(rate);
 	if (ui->on_start)
-		ui->on_start(rate, hdr[22], rate * hdr[22] * 16 / 1000);
+		ui->on_start(rate, ch, rate * ch * 16 / 1000);
 	for (;;) {
-		if (f_read(&fil, pcm[b], sizeof(pcm[b]), &br) != FR_OK || br < 4)
+		/* the DAC always takes stereo: read mono into the first half, then widen in place
+		 * (back to front, so no sample is overwritten before it is copied) */
+		uint32_t want = ch == 1 ? sizeof(pcm[b]) / 2 : sizeof(pcm[b]);
+		if (f_read(&fil, pcm[b], want, &br) != FR_OK || br < frame)
 			break;
-		audio_queue(pcm[b], br & ~3u);
-		levels(ui, pcm[b], (int)(br / 4));
+		int n = (int)(br / frame);
+		if (ch == 1)
+			for (int i = n - 1; i >= 0; i--)
+				pcm[b][2 * i] = pcm[b][2 * i + 1] = pcm[b][i];
+		int q = audio_queue(pcm[b], (uint32_t)n * 4);
+		levels(ui, pcm[b], n);
 		pos += br;
-		player_secs = (pos - 44) / (rate * 4);
+		player_secs = (pos - 44) / (rate * frame);
 		b = (b + 1) % 3;
 		if (ui->on_progress)
 			ui->on_progress(pos, total);
-		while (1) {
-			r = handle_keys(ui, &paused);
-			if (r != PLAYER_CONTINUE || !paused)
-				break;
-			wdt_feed();
-		}
+		r = after_queue(ui, q);
 		if (r != PLAYER_CONTINUE)
 			break;
 		r = PLAYER_DONE;
@@ -263,7 +333,12 @@ int player_play(const char *path, struct player_ui *ui)
 	player_secs = player_total_secs = 0;
 	if (f_open(&fil, path, FA_READ) != FR_OK)
 		return PLAYER_ERROR;
+	guard_settle();
+	guard_take_event(); /* only changes during this track count */
+	audio_set_wait_hook(guard_hook);
 	r = has_ext(path, ".WAV") ? play_wav(ui) : play_mp3(ui);
+	audio_set_wait_hook(0);
+	guard_quiet();
 	f_close(&fil);
 	return r;
 }

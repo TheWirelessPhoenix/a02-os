@@ -38,6 +38,23 @@ DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count)
 	return sd_read((uint32_t)sector, count, buff) ? RES_ERROR : RES_OK;
 }
 
+DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
+{
+	if (pdrv != 0 || !sd_ok)
+		return RES_NOTRDY;
+	/* DMA needs a word-aligned source */
+	if ((uintptr_t)buff & 3) {
+		static uint32_t bounce[128];
+		for (UINT i = 0; i < count; i++) {
+			memcpy(bounce, buff + i * 512, 512);
+			if (sd_write((uint32_t)sector + i, 1, bounce))
+				return RES_ERROR;
+		}
+		return RES_OK;
+	}
+	return sd_write((uint32_t)sector, count, buff) ? RES_ERROR : RES_OK;
+}
+
 DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void *buff)
 {
 	(void)pdrv;

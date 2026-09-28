@@ -4,3 +4,5 @@ os/*.map
 .DS_Store
 *.pyc
 __pycache__/
+os/host/route_test
+os/host/route_test.dSYM/

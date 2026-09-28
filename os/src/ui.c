@@ -90,6 +90,22 @@ void ui_header(const char *title, int playing)
 	lcd_rect(0, HDR_H - 1, LCD_W, 1, T->line);
 }
 
+/* Recorder header: same bar as ui_header() but with the red REC dot in front of the
+ * title (recorder UI design), and the dot can be blinked off by on == 0. */
+void ui_rec_header(const char *title, int on)
+{
+	lcd_rect(0, 0, LCD_W, HDR_H - 1, T->bg);
+	if (on) {
+		lcd_rect(5, 5, 5, 4, T->rec);
+		lcd_rect(6, 4, 3, 6, T->rec);
+		lcd_text(14, 3, title, 1, T->accent, T->bg);
+	} else {
+		lcd_text(5, 3, title, 1, T->accent, T->bg);
+	}
+	battery(LCD_W - 17, 3);
+	lcd_rect(0, HDR_H - 1, LCD_W, 1, T->line);
+}
+
 void ui_hints(const char *left, const char *right)
 {
 	int y = LCD_H - HINT_H;

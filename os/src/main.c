@@ -5,6 +5,10 @@
 #include "keys.h"
 #include "audio.h"
 #include "player.h"
+#include "guard.h"
+#include "power.h"
+#include "powermenu.h"
+#include "recapp.h"
 #include "ff.h"
 #include "util.h"
 
@@ -114,7 +118,7 @@ static const struct item home_items[] = {
 	{ '%', "THEMES", "" }, { '=', "SETTINGS", "" },
 };
 #define NHOME 5
-#define NSETTINGS 5
+#define NSETTINGS 6
 
 static int list_count(void)
 {
@@ -144,7 +148,7 @@ static void list_item(int i, struct item *it, char *metabuf, char *labelbuf)
 		it->label = themes[i].name;
 		break;
 	case S_SETTINGS: {
-		static const char *const lbl[NSETTINGS] = { "BACKLIGHT", "VOLUME", "EQUALIZER", "SLEEP TIMER", "ABOUT A02-OS" };
+		static const char *const lbl[NSETTINGS] = { "BACKLIGHT", "VOLUME", "JACK GUARD", "EQUALIZER", "SLEEP TIMER", "ABOUT A02-OS" };
 		it->icon = '-';
 		it->label = lbl[i];
 		if (i == 0) {
@@ -154,11 +158,13 @@ static void list_item(int i, struct item *it, char *metabuf, char *labelbuf)
 			num_str(metabuf, (uint32_t)((volume - 0x40) * 30 / (0xff - 0x40)));
 			it->meta = metabuf;
 		} else if (i == 2) {
-			it->meta = "SOON";
+			it->meta = jack_guard ? "ON" : "OFF";
 		} else if (i == 3) {
+			it->meta = "SOON";
+		} else if (i == 4) {
 			it->meta = "OFF";
 		} else {
-			it->meta = "V0.1";
+			it->meta = "V0.2";
 		}
 		break;
 	}
@@ -195,24 +201,6 @@ static void draw_screen(void)
 	static const char *const hl[] = { "M/DN MOVE", "< BACK", "", "< BACK", "< BACK" };
 	static const char *const hr[] = { "> OPEN", "> PLAY", "", "> APPLY", "> CHANGE" };
 	ui_hints(hl[screen], hr[screen]);
-}
-
-/* ---------- recorder (placeholder until the ADC path is reverse engineered) ---------- */
-
-static void draw_recorder(void)
-{
-	ui_header("RECORDER", 0);
-	ui_body_clear();
-	int cx = LCD_W / 2, cy = 52;
-	lcd_rect(cx - 24, cy - 24, 48, 2, T->dim);
-	lcd_rect(cx - 24, cy + 22, 48, 2, T->dim);
-	lcd_rect(cx - 24, cy - 24, 2, 48, T->dim);
-	lcd_rect(cx + 22, cy - 24, 2, 48, T->dim);
-	lcd_rect(cx - 12, cy - 12, 24, 24, T->rec);
-	lcd_text(cx - 24, 88, "0:00", 2, T->text, T->bg);
-	lcd_text(10, 112, "LECTURE RECORDER", 1, T->dim, T->bg);
-	lcd_text(10, 124, "COMING NEXT UPDATE", 1, T->accent, T->bg);
-	ui_hints("< BACK", "");
 }
 
 /* ---------- now playing ---------- */
@@ -351,6 +339,7 @@ static struct player_ui np_ui = { np_start, np_progress, np_pause, np_key, np_le
 static void play_from(int idx)
 {
 	static char path[320];
+	guard_user_play(); /* selecting a track is the explicit Play; auto-advance keeps the arm */
 	while (idx >= 0 && idx < nent) {
 		if (isdir[idx]) {
 			idx++;
@@ -374,6 +363,7 @@ static void play_from(int idx)
 			idx++;
 		}
 	}
+	guard_off();
 	if (sel < top)
 		top = sel;
 	if (sel >= top + ROWS)
@@ -421,14 +411,16 @@ static void activate(void)
 		if (sel == 0) {
 			if (have_last) {
 				np_file = strrchr_last(last_path);
+				guard_user_play();
 				player_play(last_path, &np_ui);
+				guard_off();
 			}
 			draw_screen();
 		} else if (sel == 1) {
 			open_music();
 		} else if (sel == 2) {
 			screen = S_REC;
-			draw_recorder();
+			recapp_open();
 		} else {
 			screen = sel == 3 ? S_THEMES : S_SETTINGS;
 			sel = screen == S_THEMES ? theme_idx : 0;
@@ -460,6 +452,8 @@ static void activate(void)
 		} else if (sel == 1) {
 			volume = volume >= 0xf0 ? 0x40 : volume + 0x18;
 			audio_volume((uint32_t)volume);
+		} else if (sel == 2) {
+			jack_guard = !jack_guard;
 		}
 		draw_row(sel);
 		break;
@@ -500,6 +494,7 @@ void *main(void)
 	lcd_text(10, 64, "A02-OS", 3, T->accent, T->bg);
 	lcd_text(40, 92, "LOADING", 1, T->dim, T->bg);
 	keys_init();
+	guard_init(); /* speaker gate closed before the DAC/PA power-up */
 	audio_init();
 	audio_volume((uint32_t)volume);
 	cpu_clock_mhz(96);
@@ -512,19 +507,30 @@ void *main(void)
 	}
 	go_home(0);
 
-	/* press BACK 3 times on the home screen to exit to the USB loader */
+	/* press BACK 3 times on the home screen: reboot into USB recovery (ready for make run) */
 	int back_count = 0;
 	for (;;) {
 		wdt_feed();
 		int k = keys_poll();
+		if (k == KEY_POWER) { /* hold Back ~2 s anywhere: POWER menu; cancel repaints */
+			powermenu();
+			if (screen == S_REC)
+				recapp_redraw();
+			else
+				draw_screen();
+			continue;
+		}
+		if (screen == S_REC) { /* the recorder animates on its own, keys or not */
+			recapp_pump();
+			if (k == KEY_NONE)
+				delay(1); /* nothing to animate: don't spin the 96 MHz core */
+			else if (!recapp_key(k))
+				back();
+			continue;
+		}
 		int n = list_count(), old = sel;
 		if (k == KEY_NONE) {
 			delay(1);
-			continue;
-		}
-		if (screen == S_REC) {
-			if (k == KEY_BACK || k == KEY_PREV)
-				back();
 			continue;
 		}
 		if (k != KEY_BACK)
@@ -546,7 +552,7 @@ void *main(void)
 		case KEY_BACK:
 			if (screen == S_HOME) {
 				if (k == KEY_BACK && ++back_count >= 3)
-					goto out;
+					goto bye;
 				continue;
 			}
 			back();
@@ -562,7 +568,13 @@ void *main(void)
 			}
 		}
 	}
-out:
+bye:
+	lcd_rect(0, 0, LCD_W, LCD_H, T->bg);
+	lcd_text(28, 64, "BYE", 3, T->dim, T->bg);
+	lcd_text(13, 100, "USB RECOVERY MODE", 1, T->dim, T->bg);
+	delay(300);
+	power_reboot_adfu();
+out: /* no SD card: return to the USB loader so the host command finishes */
 	lcd_rect(0, 0, LCD_W, LCD_H, T->bg);
 	lcd_text(28, 72, "BYE", 3, T->dim, T->bg);
 	static uint32_t ret[2];

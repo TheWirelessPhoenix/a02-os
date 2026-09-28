@@ -21,6 +21,7 @@ extern int theme_idx;
 
 void ui_set_theme(int idx);
 void ui_header(const char *title, int playing);
+void ui_rec_header(const char *title, int rec_dot_on);
 void ui_hints(const char *left, const char *right);
 void ui_body_clear(void);
 void ui_row(int slot, char icon, const char *label, const char *meta, int selected);

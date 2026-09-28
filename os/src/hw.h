@@ -1,5 +1,5 @@
 /* A02 (ATJ2157) hardware registers — derived from stock welcome.bin / drv_lcd.drv.
- * See re/HARDWARE.md for provenance. */
+ * See docs/HARDWARE.md for provenance. */
 #ifndef HW_H
 #define HW_H
 
@@ -37,7 +37,15 @@
 #define RTC_BASE        0xc0030000
 #define WD_CTL          REG(RTC_BASE + 0x1c) /* bit0 CLR (feed), bit4 WDEN */
 
-static inline void wdt_feed(void) { WD_CTL |= 1; }
+/* wdt_poll(): optional emergency-escape hook (power.c, hold Back ~6 s). Weak, so payloads
+ * that do not link power.c get a null symbol and skip it. */
+void wdt_poll(void) __attribute__((weak));
+static inline void wdt_feed(void)
+{
+	WD_CTL |= 1;
+	if (wdt_poll)
+		wdt_poll();
+}
 
 /* CPU clock (kernel.drv FUN_0011a4d2): CMU+0x00 [1:0] source 1=HOSC 24M, 2=DEVPLL, 3=COREPLL;
  * [5:4] divider log2. PLL regs: 0xc0000110 COREPLL, 0xc0000114 DEVPLL, [6:0]*6 MHz, bit7 enable.

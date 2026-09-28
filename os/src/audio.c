@@ -156,15 +156,36 @@ static void dma_set(const void *pcm, uint32_t bytes)
 	DMAC(0x18) = bytes;
 }
 
-static void wait_complete(void)
+static int (*wait_hook)(void);
+
+void audio_set_wait_hook(int (*hook)(void))
 {
-	for (uint32_t i = 0; !(DMA_PEND & (1u << ADMA)); i++)
-		if ((i & 0xfff) == 0)
-			wdt_feed();
-	DMA_PEND = 1u << ADMA;
+	wait_hook = hook;
 }
 
-void audio_queue(const void *pcm, uint32_t bytes)
+uint32_t audio_timeouts;
+
+/* Waits for the playing buffer to finish, polling ~1 ms apart (the spin also sets the
+ * jack-guard sample spacing). A nonzero hook return halts output at once. A buffer is at most
+ * ~50 ms, so 500 polls without completion means the channel is stuck: halt instead of hanging. */
+static int wait_complete(void)
+{
+	for (int n = 0; !(DMA_PEND & (1u << ADMA)); n++) {
+		wdt_feed();
+		if ((wait_hook && wait_hook()) || n >= 500) {
+			if (n >= 500)
+				audio_timeouts++;
+			audio_halt();
+			return -1;
+		}
+		for (volatile int i = 0; i < 0x2000 && !(DMA_PEND & (1u << ADMA)); i++)
+			;
+	}
+	DMA_PEND = 1u << ADMA;
+	return 0;
+}
+
+int audio_queue(const void *pcm, uint32_t bytes)
 {
 	if (!running) {
 		DMA_PEND = 1u << ADMA;
@@ -172,26 +193,32 @@ void audio_queue(const void *pcm, uint32_t bytes)
 		DMAC(4) |= 1;
 		running = 1;
 		pending = 0;
-		return;
+		return 0;
 	}
 	if (pending) {
 		/* already complete when we got here = the pending buffer started late or replayed */
 		if (DMA_PEND & (1u << ADMA))
 			audio_underruns++;
-		wait_complete();
+		if (wait_complete())
+			return -1; /* halted by the hook: buffer dropped */
 	}
 	dma_set(pcm, bytes);
 	pending = 1;
+	return 0;
 }
 
-void audio_stop(void)
+/* Immediate: the reload-mode channel would otherwise replay the queued buffers forever. */
+void audio_halt(void)
 {
-	if (running) {
-		if (pending)
-			wait_complete();
-		wait_complete();
-	}
 	DMAC(4) &= ~1u;
 	DMA_PEND = 1u << ADMA;
 	running = pending = 0;
+}
+
+/* Lets the queued audio finish (end of track), then stops the channel. */
+void audio_stop(void)
+{
+	if (running && (!pending || wait_complete() == 0))
+		wait_complete();
+	audio_halt();
 }

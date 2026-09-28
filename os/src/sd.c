@@ -28,6 +28,7 @@ static uint8_t timing = 0x6b;
 static uint16_t rca;
 static int sdhc;
 uint32_t sd_sectors;
+uint32_t sd_last_stat; /* raw SD_STAT latched on a write error, for bring-up */
 
 static int sd_status(void)
 {
@@ -125,6 +126,35 @@ static void dma_setup_read(void *buf, uint32_t len)
 	DMA4(0x18) = len;
 }
 
+/* DMA ch4: buf -> SD FIFO (FUN_0011e48c mode 1, cfg (0+0x85)*0x100) */
+static void dma_setup_write(const void *buf, uint32_t len)
+{
+	DMA4(4) &= ~1u;
+	DMA_G0 = 0x10;
+	DMA_G0 = 0x100000;
+	DMA_G1 &= ~0x10u;
+	DMA_G1 &= ~0x100000u;
+	DMA4(0x00) = 0x8500; /* controller 0 write */
+	DMA4(0x08) = (uint32_t)buf;
+	DMA4(0x10) = SD_FIFO_ADDR;
+	DMA4(0x18) = len;
+}
+
+/* R1 card status: bit16 = READY_FOR_DATA, [20:17] = CURRENT_STATE */
+int sd_wait_ready(void)
+{
+	for (int i = 0; i < 200000; i++) {
+		if (sd_cmd(13, (uint32_t)rca << 16, 1))
+			return -1;
+		if ((SD_RSP0 & (1u << 16)) && ((SD_RSP0 & 0x1fffff) >> 17) == 4)
+			return 0;
+		if ((i & 0xff) == 0)
+			wdt_feed();
+		delay(1);
+	}
+	return -1;
+}
+
 int sd_read(uint32_t lba, uint32_t count, void *buf)
 {
 	uint32_t addr = sdhc ? lba : lba << 9;
@@ -153,6 +183,49 @@ int sd_read(uint32_t lba, uint32_t count, void *buf)
 	if (count > 1)
 		sd_cmd(12, 0, 3);
 	return err;
+}
+
+int sd_write(uint32_t lba, uint32_t count, const void *buf)
+{
+	uint32_t addr = sdhc ? lba : lba << 9;
+	uint32_t cmd = count == 1 ? 24 : 25;
+	/* Data type 5 for every fresh write, single or multi (stock FUN_0011e674:
+	 * uVar4 = (cmd == 0xff) ? 7 : 5). 7 means "continue the open multi-block
+	 * transfer, do not re-issue a command" — using it on a fresh CMD25 makes the
+	 * card never accept the data (SD_STAT bit2 = data error). */
+	int err;
+
+	SD_CTL |= 0x40;
+	dma_setup_write(buf, count * 512);
+	SD_BLKCNT = count;
+	SD_BLKSZ = 512;
+	SD_ARG = addr;
+	SD_CMD = cmd;
+	SD_CMDCTL = 5 | (uint32_t)timing << 16 | 0xbf000000;
+	DMA4(4) |= 1;
+	SD_CMDCTL |= 0x80;
+	if (sd_wait_go())
+		return 9;
+	if (!(SD_STAT & 0x8017)) {
+		uint32_t i;
+		for (i = 0; (DMA4(4) & 1) && i < 400000000u; i++)
+			if ((i & 0xfff) == 0)
+				wdt_feed();
+		if (DMA4(4) & 1) {
+			DMA4(4) &= ~1u;
+			return 11; /* DMA never drained: card stopped taking data */
+		}
+	} else {
+		DMA4(4) &= ~1u;
+	}
+	err = sd_status();
+	if (err)
+		sd_last_stat = SD_STAT;
+	if (count > 1)
+		sd_cmd(12, 0, 3);
+	if (err)
+		return err;
+	return sd_wait_ready() ? 12 : 0; /* wait out internal programming */
 }
 
 int sd_init(uint32_t *dbg)

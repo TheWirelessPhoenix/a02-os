@@ -1,6 +1,6 @@
 # AGPTEK A02 hardware notes (Actions ATJ2157)
 
-Everything here was found by reverse engineering the player (observing its behaviour, reading register
+Everything here was found by reverse engineering the player (observing its behavior, reading register
 usage of the stock firmware in Ghidra, and testing on the device). No vendor code is included in this repo.
 
 ## SoC
@@ -61,6 +61,9 @@ Recovery mode leaves the CPU on DEVPLL at 48 MHz. A02-OS runs the CPU from COREP
 
 - Ladder ADC: PMU `0xC0010064` (10-bit, idle ≈ 837). Levels: Next ≈ 0, Prev ≈ 140, M ≈ 279, Down ≈ 420, Back ≈ 559.
 - Play/Pause (also power): PMU `0xC001002C` bit1.
+- **Headphone jack** shares the ladder (pin 17): empty ≈ 837 (dips to ≈ 811 while the DAC runs),
+  headphones in ≈ 700. The stock firmware splits the bands at 784 with an 11-poll debounce. Readings are
+  only valid after the ladder ADC is initialized and has settled.
 - Battery ADC: PMU `0xC001003C`.
 - Volume rocker: not found yet.
 
@@ -70,6 +73,9 @@ Recovery mode leaves the CPU on DEVPLL at 48 MHz. A02-OS runs the CPU from COREP
   command, `+0x10` argument, `+0x14..0x20` response, `+0x28` data FIFO, `+0x2C` block size, `+0x30` block count.
 - Data via DMA channel 4 (`0xC0070500`), config `0x85` for reads.
 - Standard SD init (CMD0/8/ACMD41/2/3/9/7/16/ACMD6), SDHC supported, 4-bit bus.
+- **Writes**: CMD24 (single) / CMD25 (multi), data-transfer type 5 for every new write (reads use 4; type 7
+  continues an open multi-block transfer and makes the card reject a fresh one), DMA config `0x8500`
+  (RAM → SD FIFO), CMD12 after a multi-block write, then poll CMD13 until the card is ready (state 4).
 
 ## Audio out
 
@@ -81,7 +87,38 @@ Recovery mode leaves the CPU on DEVPLL at 48 MHz. A02-OS runs the CPU from COREP
   Samples are 16-bit stereo, one frame per 32-bit word. The transfer-complete flag is `0xC0070000` bit2
   (write 1 to clear). In reload mode the channel restarts from its registers, so the next buffer must be
   programmed *before* the current one ends (queue-ahead with 3 buffers).
+- To stop output at once (pause), disable the channel. A channel stopped mid-buffer must be fully set up again
+  (DAC + DMA, as for a new track) before it is restarted. Just giving it a new buffer leaves it stalled.
 
-## Recording (not implemented yet)
+## Recording (microphone)
 
-- ADC block `0xC0181000`. Stock defaults: mic analog gain 14–33 dB, digital gain 0–59 × 0.526 dB.
+- Power the audio analog block first (same sequence as audio out). Without it the ADC never converts and the
+  capture DMA never completes.
+- ADC block `0xC0181000`, capture on DMA channel 3, config `0x4008B` (reload, peripheral → RAM), source the ADC
+  FIFO at `0xC0180018`. Rate divider at CMU `+0x80` (same divider table as the DAC).
+- Samples: mono, one per 32-bit word in the **high 16 bits, signed**.
+- Stock defaults: mic analog gain 14–33 dB, digital gain 0–59 × 0.526 dB.
+
+## GPIO
+
+- Pad config `0xC01C0004 + 4·pin`: bits[4:0] function, bit6 output enable, bit7 input enable.
+- `0xC01C0200 + 4·bank` = output data, `0xC01C0230 + 4·bank` = input data (bank = pin / 32).
+
+## Speaker
+
+- The built-in speaker's amplifier is enabled by **GPIO23**: `pad |= 0x40`, then bit 23 of `0xC01C0200`
+  high = speaker on, low = off. It is off at boot. The stock firmware turns it on only while playing with the
+  headphone jack empty. The headphones are driven by the same DAC, so no other routing is needed.
+- A02-OS keeps GPIO23 low unless the user presses Play with the jack settled empty. The first ladder
+  reading that is not "empty" drops it at once (`os/src/route.c`, `guard.c`).
+
+## Power and reboot
+
+- **Reboot into USB recovery (ADFU):** write `0xADF0ADF0` to RAM `0x130000`, then watchdog control
+  `0xC003001C = 0x5F`. After the watchdog reset the boot ROM sees the marker and stays in recovery (`10d6:10d6`).
+  This is what the stock firmware does for the `adfu_reboot` USB command. A02-OS keeps `0x130000` free for it.
+- **Plain reboot** (boots the stock firmware): `WD_CTL = (WD_CTL & ~0x2E) | 0x11`. (Not tested on the device yet.)
+- **Power off**: PMU `+0x2C = (x & ~0x1C0) | 0x80`; clear bits 21–23 of `0xC01C0304` and set `0x600000`
+  unless bit16 (USB present) is set; PMU `+0x24 = 0x815`; PMU `+0x28 = 0x01F00E1F`; clear PMU `+0x20`
+  bit1, then bit0 (power enable). About 0.5 ms between steps. On USB power the board keeps running until USB
+  is unplugged.
