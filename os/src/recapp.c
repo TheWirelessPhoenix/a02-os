@@ -610,7 +610,7 @@ static void sv_levels(const uint8_t *lv, int n)
 	}
 }
 
-static struct player_ui sv_ui = { sv_start, sv_progress, sv_pause, sv_key, sv_levels };
+static struct player_ui sv_ui = { sv_start, sv_progress, sv_pause, sv_key, sv_levels, 0 };
 
 /* ---------- marks: a plain text sidecar with the seconds of each M press ---------- */
 

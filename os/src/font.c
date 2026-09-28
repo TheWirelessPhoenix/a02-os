@@ -52,6 +52,7 @@ void lcd_char(int x, int y, char ch, int scale, uint16_t fg, uint16_t bg)
 	lcd_lock();
 	lcd_window(x, y, x + w - 1, y + h - 1);
 	saved = CMU_CTL;
+	uint32_t t0 = cycles();
 	CMU_CTL = (saved & 0xfffffeccu) | 1;
 	LCDC_CTL = (LCDC_CTL & 0xe7cfff37u) | 0x40;
 	for (int row = 0; row < h; row++) {
@@ -63,6 +64,7 @@ void lcd_char(int x, int y, char ch, int scale, uint16_t fg, uint16_t bg)
 		}
 	}
 	CMU_CTL = saved;
+	lcd_slow_account(saved, t0);
 	lcd_unlock();
 }
 

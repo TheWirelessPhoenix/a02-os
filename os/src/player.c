@@ -128,6 +128,7 @@ static void levels(struct player_ui *ui, const int16_t *s, int frames)
 }
 
 static uint32_t cur_hz; /* rate of the playing track, for restarting output after a pause */
+uint32_t player_frame_ms;
 
 static int other_key(struct player_ui *ui, int k)
 {
@@ -175,6 +176,8 @@ static int pause_loop(struct player_ui *ui)
 			if (r != PLAYER_CONTINUE)
 				return r;
 		}
+		if (ui->on_tick)
+			ui->on_tick();
 		delay(1);
 	}
 	/* Full DAC + DMA re-setup, as for a new track: a channel halted mid-buffer is not
@@ -265,6 +268,7 @@ static int play_mp3(struct player_ui *ui)
 		} else {
 			memcpy(p, out, (size_t)samples * 4);
 		}
+		player_frame_ms = (uint32_t)samples * 1000 / (uint32_t)info.hz;
 		int q = audio_queue(p, (uint32_t)samples * 4);
 		b = (b + 1) % 3;
 		frames_played += (uint32_t)samples;
@@ -310,6 +314,7 @@ static int play_wav(struct player_ui *ui)
 		if (ch == 1)
 			for (int i = n - 1; i >= 0; i--)
 				pcm[b][2 * i] = pcm[b][2 * i + 1] = pcm[b][i];
+		player_frame_ms = (uint32_t)n * 1000 / rate;
 		int q = audio_queue(pcm[b], (uint32_t)n * 4);
 		levels(ui, pcm[b], n);
 		pos += br;

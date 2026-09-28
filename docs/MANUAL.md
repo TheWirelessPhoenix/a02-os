@@ -1,4 +1,4 @@
-# A02-OS user manual (v0.2)
+# A02-OS user manual (v0.2.1)
 
 A02-OS runs on the **AGPTEK A02** from RAM. You load it from a computer over USB (see
 [Getting started](#getting-started)). Your music and recordings live on the microSD card.
@@ -38,7 +38,7 @@ The volume rocker on the side is not supported yet. Use M / Down on the Now Play
 |---|---|
 | ▶❚❚ | pause / resume |
 | ▶▶ / ◀◀ | next / previous track |
-| M / Down | volume up / down |
+| M / Down | volume up / down (a volume bar shows on the right edge while you change it) |
 | Back | back to the list (stops playback) |
 
 ### Recorder
@@ -85,7 +85,7 @@ The built-in speaker is locked down for privacy:
 | **ON** (default) | Plugging in *or* unplugging headphones pauses playback right away. It never resumes by itself. |
 | **OFF** | Plugging and unplugging never pause. After unplugging, the music keeps going silently, because the speaker still stays off. Press ▶❚❚ twice (pause, then play) to hear it on the speaker. |
 
-Settings are not saved yet. JACK GUARD is back ON after every restart.
+Settings (theme, volume, backlight, JACK GUARD) are saved on the SD card in `A02OS.CFG`.
 
 ## Settings
 
@@ -95,6 +95,7 @@ Settings are not saved yet. JACK GUARD is back ON after every restart.
 | VOLUME | step the volume |
 | JACK GUARD | switch ON / OFF |
 | EQUALIZER, SLEEP TIMER | not available yet |
+| BATTERY | shows **CHARGING** on USB power, otherwise the level (**5/5** = full … **0/5** = empty) |
 | ABOUT A02-OS | shows the version |
 
 ## Themes

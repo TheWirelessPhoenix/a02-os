@@ -2,6 +2,8 @@
 #define A02_LCD_H
 #include "hw.h"
 void delay(uint32_t units);
+uint32_t clock_ms(void); /* monotonic ms, true even while drawing (see lcd.c) */
+void lcd_slow_account(uint32_t saved_cmu, uint32_t t0); /* after a 24 MHz pixel burst */
 void lcd_init(void);
 void lcd_fill_pattern(void);
 void lcd_rect(int x, int y, int w, int h, uint16_t c);

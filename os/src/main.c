@@ -1,5 +1,6 @@
 /* A02-OS shell: Home / Music / Now Playing / Recorder / Themes / Settings.
  * Keys: M = up, DOWN = down, NEXT or PLAY = open, PREV or BACK = back. */
+#include <stddef.h>
 #include <string.h>
 #include "ui.h"
 #include "keys.h"
@@ -24,6 +25,72 @@ static uint8_t isdir[MAXENT];
 static int nent, sel, top, screen = S_HOME;
 static uint32_t result[8];
 static int volume = 0xa0, backlight = 7;
+
+/* ---------- saved settings: /A02OS.CFG on the card ---------- */
+
+#define CFG_PATH "/A02OS.CFG"
+#define CFG_MAGIC 0x41303243u /* "C20A" */
+struct cfg { uint32_t magic; uint8_t version, theme, volume, backlight, jack_guard, pad[3]; uint32_t sum; };
+static struct cfg cfg_saved;
+
+static uint32_t cfg_sum(const struct cfg *c)
+{
+	const uint8_t *p = (const uint8_t *)c;
+	uint32_t h = 2166136261u; /* FNV-1a over everything before .sum */
+	for (unsigned i = 0; i < offsetof(struct cfg, sum); i++)
+		h = (h ^ p[i]) * 16777619u;
+	return h;
+}
+
+static void cfg_current(struct cfg *c)
+{
+	memset(c, 0, sizeof(*c));
+	c->magic = CFG_MAGIC;
+	c->version = 1;
+	c->theme = (uint8_t)theme_idx;
+	c->volume = (uint8_t)volume;
+	c->backlight = (uint8_t)backlight;
+	c->jack_guard = (uint8_t)jack_guard;
+	c->sum = cfg_sum(c);
+}
+
+/* Missing, short or corrupt file: keep the defaults. Values are range-checked. */
+static void settings_load(void)
+{
+	FIL f;
+	UINT br;
+	struct cfg c;
+	if (f_open(&f, CFG_PATH, FA_READ) != FR_OK)
+		return;
+	FRESULT fr = f_read(&f, &c, sizeof(c), &br);
+	f_close(&f);
+	if (fr != FR_OK || br != sizeof(c) || c.magic != CFG_MAGIC || c.version != 1 || c.sum != cfg_sum(&c))
+		return;
+	if (c.theme < NTHEMES)
+		ui_set_theme(c.theme);
+	if (c.volume >= 0x40)
+		volume = c.volume;
+	if (c.backlight >= 2 && c.backlight <= 10)
+		backlight = c.backlight;
+	jack_guard = c.jack_guard != 0;
+	cfg_current(&cfg_saved);
+}
+
+/* Writes only when something changed since the last load/save. */
+static void settings_save(void)
+{
+	struct cfg c;
+	FIL f;
+	UINT bw;
+	cfg_current(&c);
+	if (!memcmp(&c, &cfg_saved, sizeof(c)))
+		return;
+	if (f_open(&f, CFG_PATH, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+		return;
+	FRESULT fr = f_write(&f, &c, sizeof(c), &bw);
+	if (f_close(&f) == FR_OK && fr == FR_OK && bw == sizeof(c))
+		cfg_saved = c;
+}
 static char last_path[320];
 static int have_last;
 
@@ -118,7 +185,7 @@ static const struct item home_items[] = {
 	{ '%', "THEMES", "" }, { '=', "SETTINGS", "" },
 };
 #define NHOME 5
-#define NSETTINGS 6
+#define NSETTINGS 7
 
 static int list_count(void)
 {
@@ -148,7 +215,7 @@ static void list_item(int i, struct item *it, char *metabuf, char *labelbuf)
 		it->label = themes[i].name;
 		break;
 	case S_SETTINGS: {
-		static const char *const lbl[NSETTINGS] = { "BACKLIGHT", "VOLUME", "JACK GUARD", "EQUALIZER", "SLEEP TIMER", "ABOUT A02-OS" };
+		static const char *const lbl[NSETTINGS] = { "BACKLIGHT", "VOLUME", "JACK GUARD", "EQUALIZER", "SLEEP TIMER", "BATTERY", "ABOUT A02-OS" };
 		it->icon = '-';
 		it->label = lbl[i];
 		if (i == 0) {
@@ -163,6 +230,16 @@ static void list_item(int i, struct item *it, char *metabuf, char *labelbuf)
 			it->meta = "SOON";
 		} else if (i == 4) {
 			it->meta = "OFF";
+		} else if (i == 5) {
+			if (usb_powered()) {
+				it->meta = "CHARGING";
+			} else { /* "4/5" */
+				metabuf[0] = (char)('0' + battery_level());
+				metabuf[1] = '/';
+				metabuf[2] = '5';
+				metabuf[3] = 0;
+				it->meta = metabuf;
+			}
 		} else {
 			it->meta = "V0.2";
 		}
@@ -214,7 +291,8 @@ static void draw_screen(void)
 #define BAR_MAX (VIZ_H - 8)
 
 static const char *np_file;
-static int np_bar[NBANDS], np_last_bar, np_last_sec, np_vol_popup, np_paused;
+static int np_bar[NBANDS], np_last_bar, np_last_sec, np_paused;
+
 
 static void np_times(void)
 {
@@ -239,10 +317,10 @@ static void np_title(void)
 	}
 	lcd_rect(0, 74, LCD_W, 48, T->bg);
 	int len = (int)strlen(title);
-	ui_text_fit(6, 76, title, 20, T->text, T->bg);
-	if (len > 20)
-		ui_text_fit(6, 86, title + 20, 20, T->text, T->bg);
-	ui_text_fit(6, 100, player_artist[0] ? player_artist : "UNKNOWN ARTIST", 20, T->dim, T->bg);
+	ui_text_fit(6, 76, title, 19, T->text, T->bg); /* 19 chars: x <= 119, pill margin clear */
+	if (len > 19)
+		ui_text_fit(6, 86, title + 19, 19, T->text, T->bg);
+	ui_text_fit(6, 100, player_artist[0] ? player_artist : "UNKNOWN ARTIST", 19, T->dim, T->bg);
 }
 
 static void np_start(uint32_t hz, uint32_t ch, uint32_t kbps)
@@ -259,7 +337,7 @@ static void np_start(uint32_t hz, uint32_t ch, uint32_t kbps)
 		np_bar[i] = 0;
 	np_last_bar = 0;
 	np_last_sec = -1;
-	np_vol_popup = 0;
+	ui_vol_pill_reset();
 	np_paused = 0;
 	np_times();
 	ui_hints("<< >> TRACK", "M/DN VOL");
@@ -275,8 +353,12 @@ static void np_progress(uint32_t pos, uint32_t total)
 	if ((int)player_secs != np_last_sec) {
 		np_last_sec = (int)player_secs;
 		np_times();
+		if (np_last_sec % 10 == 0)
+			ui_battery_refresh();
 	}
 }
+
+static void np_tick(void);
 
 static void np_levels(const uint8_t *lv, int n)
 {
@@ -284,8 +366,7 @@ static void np_levels(const uint8_t *lv, int n)
 	int x0 = VIZ_X + (VIZ_W - (NBANDS * BAR_W + (NBANDS - 1) * BAR_GAP)) / 2;
 	int base = VIZ_Y + VIZ_H - 4;
 
-	if (np_vol_popup && --np_vol_popup == 0)
-		np_title();
+	ui_vol_pill_tick(player_frame_ms); /* one decoded buffer per call */
 	if (++tick & 1)
 		return; /* draw every other frame to save CPU */
 	for (int i = 0; i < n && i < NBANDS; i++) {
@@ -310,9 +391,15 @@ static void np_pause(int paused)
 	np_times();
 }
 
+#define VOL_LEVEL() ((volume - 0x40) * 30 / (0xff - 0x40))
+
+static void np_tick(void) /* pause loop: ~1 ms per call */
+{
+	ui_vol_pill_tick(1);
+}
+
 static void np_key(int k)
 {
-	char b[16];
 	if (k == KEY_MENU)
 		volume += 7;
 	if (k == KEY_DOWN)
@@ -322,19 +409,10 @@ static void np_key(int k)
 	if (volume < 0x40)
 		volume = 0x40;
 	audio_volume((uint32_t)volume);
-	int v = (volume - 0x40) * 30 / (0xff - 0x40);
-	lcd_rect(14, 76, LCD_W - 28, 30, T->surface);
-	lcd_rect(14, 76, LCD_W - 28, 1, T->accent);
-	lcd_rect(14, 105, LCD_W - 28, 1, T->accent);
-	strcpy(b, "VOLUME ");
-	num_str(b + 7, (uint32_t)v);
-	lcd_text(20, 80, b, 1, T->dim, T->surface);
-	lcd_rect(20, 93, LCD_W - 40, 5, T->bg);
-	lcd_rect(20, 93, (LCD_W - 40) * v / 30, 5, T->accent);
-	np_vol_popup = 60; /* ~1.5 s of frames */
+	ui_vol_pill_show(VOL_LEVEL(), 30);
 }
 
-static struct player_ui np_ui = { np_start, np_progress, np_pause, np_key, np_levels };
+static struct player_ui np_ui = { np_start, np_progress, np_pause, np_key, np_levels, np_tick };
 
 static void play_from(int idx)
 {
@@ -364,6 +442,7 @@ static void play_from(int idx)
 		}
 	}
 	guard_off();
+	settings_save(); /* volume may have changed while playing */
 	if (sel < top)
 		top = sel;
 	if (sel >= top + ROWS)
@@ -414,6 +493,7 @@ static void activate(void)
 				guard_user_play();
 				player_play(last_path, &np_ui);
 				guard_off();
+				settings_save();
 			}
 			draw_screen();
 		} else if (sel == 1) {
@@ -476,9 +556,11 @@ static void back(void)
 		go_home(2);
 		break;
 	case S_THEMES:
+		settings_save();
 		go_home(3);
 		break;
 	case S_SETTINGS:
+		settings_save();
 		go_home(4);
 		break;
 	}
@@ -487,6 +569,10 @@ static void back(void)
 void *main(void)
 {
 	result[0] = 0xa02a02a0;
+	/* DMA block out of reset + clock on (SD, audio, mic): the boot ROM leaves it on, but other
+	 * loader payloads (e.g. actions_flash nandread's deinit) switch it off. */
+	CMU_DEVCLKEN |= 1;
+	RMU_CTL |= 1;
 	lcd_init();
 	ui_set_theme(0);
 	lcd_rect(0, 0, LCD_W, LCD_H, T->bg);
@@ -505,6 +591,9 @@ void *main(void)
 		lcd_text(22, 120, "INSERT SD CARD", 1, T->rec, T->bg);
 		goto out;
 	}
+	settings_load();
+	backlight_on((uint8_t)backlight);
+	audio_volume((uint32_t)volume);
 	go_home(0);
 
 	/* press BACK 3 times on the home screen: reboot into USB recovery (ready for make run) */
@@ -513,6 +602,7 @@ void *main(void)
 		wdt_feed();
 		int k = keys_poll();
 		if (k == KEY_POWER) { /* hold Back ~2 s anywhere: POWER menu; cancel repaints */
+			settings_save();
 			powermenu();
 			if (screen == S_REC)
 				recapp_redraw();
@@ -530,6 +620,9 @@ void *main(void)
 		}
 		int n = list_count(), old = sel;
 		if (k == KEY_NONE) {
+			static unsigned idle;
+			if (++idle % 4000 == 0) /* every few seconds */
+				ui_battery_refresh();
 			delay(1);
 			continue;
 		}

@@ -66,18 +66,123 @@ void ui_text_fit(int x, int y, const char *s, int maxch, uint16_t fg, uint16_t b
 	lcd_text(x, y, b, 1, fg, bg);
 }
 
+/* Battery: PMU+0x3c ADC (10-bit). Levels from the stock firmware's table (shared app code,
+ * music.ap 0x18da1fa6): level i when the 7-sample average >= tab[i]. Calibration not yet
+ * checked against a real voltage: Settings > BATTERY shows the raw value. */
+static const uint16_t bat_tab[6] = { 0, 706, 749, 768, 780, 821 };
+static int bat_lvl = -1;
+
+uint32_t battery_raw(void)
+{
+	uint32_t sum = 0;
+	for (int i = 0; i < 7; i++)
+		sum += REG(0xc0010000 + 0x3c) & 0x3ff;
+	return (sum + 3) / 7;
+}
+
+int battery_level(void)
+{
+	uint32_t v = battery_raw();
+	int l = 5;
+	while (l > 0 && v < bat_tab[l])
+		l--;
+	/* hysteresis: only step up once clearly above the next threshold */
+	if (bat_lvl >= 0 && l > bat_lvl && v < bat_tab[l] + 8u)
+		l = bat_lvl;
+	bat_lvl = l;
+	return l;
+}
+
 static void battery(int x, int y)
 {
-	/* PMU+0x3c battery ADC (10-bit); ~0x2ab is the stock low-battery threshold */
-	uint32_t v = REG(0xc0010000 + 0x3c) & 0x3ff;
-	int fill = v <= 0x2b0 ? 1 : v >= 0x3c0 ? 7 : 1 + (int)(v - 0x2b0) * 6 / (0x3c0 - 0x2b0);
-	lcd_rect(x, y, 11, 1, T->dim);
-	lcd_rect(x, y + 6, 11, 1, T->dim);
-	lcd_rect(x, y, 1, 7, T->dim);
-	lcd_rect(x + 10, y, 1, 7, T->dim);
-	lcd_rect(x + 11, y + 2, 1, 3, T->dim);
-	lcd_rect(x + 2, y + 2, fill, 3, T->dim);
+	int l = battery_level();
+	uint16_t c = l <= 1 ? T->rec : T->dim;
+	int fill = l * 7 / 5;
+	lcd_rect(x, y, 11, 1, c);
+	lcd_rect(x, y + 6, 11, 1, c);
+	lcd_rect(x, y, 1, 7, c);
+	lcd_rect(x + 10, y, 1, 7, c);
+	lcd_rect(x + 11, y + 2, 1, 3, c);
+	lcd_rect(x + 2, y + 2, fill, 3, c);
 	lcd_rect(x + 2 + fill, y + 2, 7 - fill, 3, T->bg);
+}
+
+/* USB/VBUS present: bit16 of 0xc01c0304 (stock power-off and charge code test it) */
+int usb_powered(void)
+{
+	return (REG(0xc01c0304) & 0x10000) != 0;
+}
+
+/* ---- Volume pill (mockup style B) ----
+ * Right margin, over plain background only (titles stop at x 119), so hiding it is just redrawing
+ * its ~400 pixels in the background color (pill_draw(0)); nothing else is repainted. pill_draw(k)
+ * can also blend toward the background (k = opacity) for a future fade. */
+#define PILL_X  (LCD_W - 6)
+#define PILL_W  5
+#define PILL_BH (VOLPILL_H - 12) /* bar height; speaker icon below */
+static int pill_on, pill_level, pill_max = 1;
+static uint32_t pill_t, pill_acc; /* shown at clock_ms() pill_t; pill_acc = backup ms count */
+
+static uint16_t mix565(uint16_t a, uint16_t b, int k) /* k/256 of b over a */
+{
+	int ar = a >> 11, ag = (a >> 5) & 63, ab = a & 31;
+	int br = b >> 11, bg = (b >> 5) & 63, bb = b & 31;
+	return (uint16_t)(((ar + ((br - ar) * k >> 8)) << 11) | ((ag + ((bg - ag) * k >> 8)) << 5) |
+			  (ab + ((bb - ab) * k >> 8)));
+}
+
+static void pill_draw(int k) /* k = opacity 0..256 */
+{
+	const int x = PILL_X, y = VOLPILL_Y, h = PILL_BH;
+	uint16_t line = mix565(T->bg, T->line, k), surf = mix565(T->bg, T->surface, k);
+	uint16_t acc = mix565(T->bg, T->accent, k), dim = mix565(T->bg, T->dim, k);
+	int fh = (h - 2) * pill_level / pill_max;
+	lcd_rect(x + 1, y, PILL_W - 2, 1, line);
+	lcd_rect(x + 1, y + h - 1, PILL_W - 2, 1, line);
+	lcd_rect(x, y + 1, 1, h - 2, line);
+	lcd_rect(x + PILL_W - 1, y + 1, 1, h - 2, line);
+	lcd_rect(x + 1, y + 1, PILL_W - 2, h - 2 - fh, surf);
+	lcd_rect(x + 1, y + 1 + (h - 2 - fh), PILL_W - 2, fh, acc);
+	int sx = x + PILL_W / 2 - 3, sy = y + h + 4; /* speaker */
+	lcd_rect(sx, sy, 7, 7, T->bg);
+	lcd_rect(sx, sy + 2, 2, 3, dim);
+	lcd_rect(sx + 2, sy + 1, 1, 5, dim);
+	lcd_rect(sx + 3, sy, 1, 7, dim);
+	if (pill_level > 0)
+		lcd_rect(sx + 5, sy + 2, 1, 3, dim);
+}
+
+/* Show / update at full color; it hides 1.5 s after the last call. */
+void ui_vol_pill_show(int level, int max)
+{
+	pill_max = max > 0 ? max : 1;
+	pill_level = level < 0 ? 0 : level > pill_max ? pill_max : level;
+	pill_draw(256);
+	pill_on = 1;
+	pill_t = clock_ms();
+	pill_acc = 0;
+}
+
+/* ms_hint: roughly how long since the previous call (backup timer if the clock ever stalls). */
+void ui_vol_pill_tick(uint32_t ms_hint)
+{
+	if (!pill_on)
+		return;
+	pill_acc += ms_hint;
+	if (clock_ms() - pill_t >= 1500 || pill_acc >= 1500) {
+		pill_draw(0); /* opacity 0 = background: erased */
+		pill_on = 0;
+	}
+}
+
+void ui_vol_pill_reset(void) /* the screen was repainted: forget the pill without drawing */
+{
+	pill_on = 0;
+}
+
+void ui_battery_refresh(void)
+{
+	battery(LCD_W - 17, 3);
 }
 
 void ui_header(const char *title, int playing)

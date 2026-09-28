@@ -11,6 +11,30 @@ void delay(uint32_t units)
 	}
 }
 
+/* ---- clock_ms(): wall-clock milliseconds from the core cycle counter ----
+ * Pixel writes run the CPU from the 24 MHz crystal (as the stock driver does), which slows the
+ * cycle counter; each such stretch is measured and the missing cycles are credited, so the clock
+ * stays true during heavy drawing. Base rate 96 MHz (runs at half speed before cpu_clock_mhz(96)).
+ * Call at least every ~40 s (it is called constantly by the UI). */
+static uint32_t slow_extra;
+
+void lcd_slow_account(uint32_t saved_cmu, uint32_t t0)
+{
+	uint32_t d = cycles() - t0, src = saved_cmu & 3;
+	slow_extra += src == 3 ? d * 3 : src == 2 ? d : 0; /* COREPLL 96 / DEVPLL 48 vs 24 MHz */
+}
+
+uint32_t clock_ms(void)
+{
+	static uint32_t last;
+	static uint64_t total;
+	uint32_t now = cycles();
+	total += (uint32_t)(now - last) + slow_extra;
+	slow_extra = 0;
+	last = now;
+	return (uint32_t)(total / CYCLES_PER_MS);
+}
+
 void lcd_lock(void)   { LCDC_CTL &= ~0x10000000u; }
 void lcd_unlock(void) { LCDC_CTL |= 0x10000000u; }
 
@@ -167,10 +191,12 @@ void lcd_rect(int x, int y, int w, int h, uint16_t c)
 	lcd_lock();
 	lcd_window(x, y, x + w - 1, y + h - 1);
 	saved = CMU_CTL;
+	uint32_t t0 = cycles();
 	CMU_CTL = (saved & 0xfffffeccu) | 1;
 	LCDC_CTL = (LCDC_CTL & 0xe7cfff37u) | 0x40;
 	for (int i = 0; i < w * h; i++)
 		fifo_write(v);
 	CMU_CTL = saved;
+	lcd_slow_account(saved, t0);
 	lcd_unlock();
 }

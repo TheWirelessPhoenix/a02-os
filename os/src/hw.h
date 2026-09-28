@@ -40,6 +40,10 @@
 /* wdt_poll(): optional emergency-escape hook (power.c, hold Back ~6 s). Weak, so payloads
  * that do not link power.c get a null symbol and skip it. */
 void wdt_poll(void) __attribute__((weak));
+/* Core cycle counter (enabled by keys_init()); ~96 per microsecond at 96 MHz. */
+static inline uint32_t cycles(void) { return *(volatile uint32_t *)0xe0001004; }
+#define CYCLES_PER_MS 96000u
+
 static inline void wdt_feed(void)
 {
 	WD_CTL |= 1;
