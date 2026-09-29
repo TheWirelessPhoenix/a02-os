@@ -4,9 +4,10 @@ An open-source replacement OS for the **AGPTEK A02** MP3 player (Actions ATJ2157
 
 Fast, simple, themeable, and it sounds great.
 
-> **Status: v0.2.1 preview.** A02-OS runs from RAM and is loaded into the player over USB from a computer.
-> It is not installed to the player's flash yet, so the stock firmware is untouched and a power cycle
-> always brings it back. Installing to flash is planned once a tested recovery tool exists.
+> **Status: v0.2.1 + flash install.** A02-OS can now be **installed to the player's flash** from a Mac
+> (no Windows) and starts at power-on; the stock firmware stays underneath as a fallback (hold M at
+> power-on) and can be written back at any time. See [docs/FLASH-INSTALL.md](docs/FLASH-INSTALL.md).
+> It still runs from RAM over USB too, for development.
 
 ## What works
 
@@ -27,8 +28,8 @@ Fast, simple, themeable, and it sounds great.
 
 ## Not yet
 
-- Side volume rocker, FLAC/AAC, sleep timer, equalizer, internal storage, installing to flash,
-  USB mass storage
+- Side volume rocker, FLAC/AAC, sleep timer, equalizer, internal storage, USB mass storage
+  (copy music with the stock firmware for now: hold M at power-on)
 
 ## Controls
 
@@ -62,7 +63,10 @@ To load a new build, you don't need to power cycle. On the player choose POWER (
 `make reload` reboots the player into recovery from the computer (macOS).
 
 To return to the stock firmware: POWER → **RESTART (STOCK)**, or slide the power switch off, unplug, plug back in,
-switch on.
+switch on. Once A02-OS is installed to flash, hold **M** while powering on to start stock instead.
+
+**Install to flash:** [docs/FLASH-INSTALL.md](docs/FLASH-INSTALL.md) (`python3 tools/flash/fetch_firmware.py`,
+`cd os && make image`, then `python3 tools/flash/adfu_flash.py --write --image os/a02os-boot.lfi`).
 
 Host test of the speaker/headphone privacy logic: `cd os && make route-test`.
 
@@ -70,9 +74,12 @@ Host test of the speaker/headphone privacy logic: `cd os && make route-test`.
 
 ```
 os/src/        A02-OS (drivers: lcd, keys, sd, audio, adc; player; recorder; speaker/jack guard; power; UI)
+os/boot/       boot stub that starts A02-OS from flash (replaces KER_INIT.BIN) + its RAM test
 os/host/       route_test.c (host test), reload.sh (reboot the player into recovery)
 os/lib/        FatFs, minimp3 (third-party, see their licenses)
-docs/          MANUAL.md — how to use it; HARDWARE.md — everything learned about the hardware
+docs/          MANUAL.md — how to use it; HARDWARE.md — the hardware; FLASH-INSTALL.md — install to flash
+tools/flash/   Mac/Linux flasher (the vendor ADFU procedure), image builder, UPGRADE.HEX builder, fetcher
+tools/unbrick/ official-firmware downloader + read-only flash-driver patch and its proof (nand_gate.py)
 tools/         yqhx2elf.py (stock driver -> ELF), ap2elf.py (stock app -> ELF), annotate.py,
                ghidra/ export scripts (DumpDecomp, BankFuncs)
 ```
@@ -86,7 +93,8 @@ from RAM with `actions_flash`. See [docs/HARDWARE.md](docs/HARDWARE.md).
 ## Disclaimer
 
 Not affiliated with AGPTEK or Actions Semiconductor. Use at your own risk. This repository contains no vendor
-firmware or code.
+firmware or code: the flash tools download the official update from AGPTEK and verify it by hash on your machine.
+`tools/flash/fwkey.c` includes Rockbox code (GPL-2.0-or-later).
 
 ## License
 

@@ -49,3 +49,37 @@ clean:
 	rm -rf host/route_test.dSYM
 
 .PHONY: all run reload route-test clean
+
+# ---- flash boot stub (replaces KER_INIT.BIN in the firmware image; see boot/stub.c and
+# docs/FLASH-INSTALL.md). Needs the original KER_INIT.BIN from the official firmware, which
+# tools/flash/fetch_firmware.py puts in the local vendor cache (never in this repository).
+A02_VENDOR_DIR ?= $(HOME)/Library/Caches/a02-os/vendor
+STUB_ORIG_DIR ?= $(A02_VENDOR_DIR)/files
+STUB_CFLAGS = -mthumb -mcpu=cortex-m4 -Os -Wall -Wextra -std=gnu99 -ffreestanding -nostdlib -nostartfiles \
+	-fno-builtin -Wa,-I$(STUB_ORIG_DIR) -Wl,-T,boot/stub.ld -Wl,--no-warn-rwx-segments
+boot/stub.elf: boot/stub.c boot/stub_entry.s boot/stub.ld $(STUB_ORIG_DIR)/KER_INIT.BIN
+	$(CC) $(STUB_CFLAGS) boot/stub_entry.s boot/stub.c -o $@
+boot/stub.bin: boot/stub.elf
+	$(OBJCOPY) -O binary $< $@
+# Diagnostic variant: writes a report at 0x130100 and goes to USB recovery instead of stock.
+boot/stub-debug.elf: boot/stub.c boot/stub_entry.s boot/stub.ld $(STUB_ORIG_DIR)/KER_INIT.BIN
+	$(CC) $(STUB_CFLAGS) -DSTUB_DEBUG boot/stub_entry.s boot/stub.c -o $@
+boot/stub-debug.bin: boot/stub-debug.elf
+	$(OBJCOPY) -O binary $< $@
+$(STUB_ORIG_DIR)/KER_INIT.BIN:
+	@echo "missing $@ - run: python3 ../tools/flash/fetch_firmware.py"; exit 1
+
+# RAM test of the stub's decision logic (reports, never acts). Result: stubtest_result.bin
+boot/stubtest.bin: boot/stub.c boot/stubtest.c boot/stubtest.h src/start.s link.ld
+	$(CC) $(CFLAGS) -DSTUB_TEST -Iboot $(LDFLAGS) src/start.s boot/stubtest.c boot/stub.c -lgcc -o boot/stubtest.elf
+	$(OBJCOPY) -O binary -R .bss boot/stubtest.elf $@
+run-stubtest: boot/stubtest.bin
+	cd $(ACTIONS_FLASH) && ./actions_dump --wait 20 chip 2157 timeout $${TIMEOUT:-60000} \
+		simple_switch 0x118000 payload_arm/adfus.bin \
+		simple_exec 0x120001 $(CURDIR)/boot/stubtest.bin -1 \
+		read_mem 0x102000 0x58 $(CURDIR)/stubtest_result.bin
+
+# Firmware image with A02-OS: stock + boot stub + a02os.bin, exactly the stock size
+image: a02os.bin boot/stub.bin
+	python3 ../tools/flash/mk_a02os_lfi.py -o a02os-boot.lfi
+.PHONY: run-stubtest image

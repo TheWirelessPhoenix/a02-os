@@ -120,6 +120,16 @@ You need a computer with macOS (Linux should work but is untested) and the tools
    `make run` again. No power cycle or `sudo` needed. If A02-OS has already exited, `make reload` does the same
    from the computer.
 
+## Installed to flash
+
+If A02-OS is installed to the player's flash ([FLASH-INSTALL.md](FLASH-INSTALL.md)):
+
+| At power-on | Result |
+|---|---|
+| Normal power-on (hold Play, let go at the logo), or plug into USB | A02-OS |
+| Keep holding **M** through power-on | Stock firmware (use it to copy music over USB for now) |
+| Keep holding **Play** ~6 s, until the screen goes dark | USB recovery mode (to update or restore from the computer) |
+
 ## Troubleshooting
 
 | Problem | Fix |
@@ -128,4 +138,4 @@ You need a computer with macOS (Linux should work but is untested) and the tools
 | "INSERT SD CARD" | Insert a FAT32/exFAT card and run again. |
 | No sound from the speaker | Unplug headphones and press ▶❚❚. The speaker only starts on your press. |
 | Music paused when I plugged or unplugged headphones | That is JACK GUARD. Press ▶❚❚ to continue, or turn it OFF in Settings. |
-| Want the original firmware back | POWER → RESTART (STOCK). Or slide the power switch off, unplug, plug back in, switch on. |
+| Want the original firmware back | POWER → RESTART (STOCK). Or slide the power switch off, unplug, plug back in, switch on. If A02-OS is installed to flash: hold **M** while powering on. |

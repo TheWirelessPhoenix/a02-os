@@ -6,3 +6,11 @@ os/*.map
 __pycache__/
 os/host/route_test
 os/host/route_test.dSYM/
+os/boot/*.elf
+os/boot/*.bin
+os/*.lfi
+os/stubtest_result.bin
+tools/flash/fwkey
+*.HEX
+*.hex.part
+__pycache__/

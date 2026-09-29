@@ -1,0 +1,12 @@
+{
+  "description": "Make the stock AGPTEK A02 flash driver (fwscf651.bin, from the official 20241019 update) unable to erase or program NAND: the only two functions that issue those commands return immediately. Contains no vendor code: offsets, expected original bytes, replacement bytes and hashes only.",
+  "input_sha256": "93c4686260826e635babb16226e1a348a971892ef09fcdaaa4f70bfde4d7bcf9",
+  "input_size": 30044,
+  "load_address": "0x11e000",
+  "patches": [
+    {"name": "erase (NAND 60h/D0h issuer, FUN_00121fa0)", "offset": "0x3fa0", "expect": "f0b587b0", "replace": "01207047", "asm": "movs r0,#1 ; bx lr  (report success, touch nothing)"},
+    {"name": "program (NAND 80h/85h issuer, FUN_00122b44)", "offset": "0x4b44", "expect": "70b53f4d", "replace": "00207047", "asm": "movs r0,#0 ; bx lr"}
+  ],
+  "output_sha256": "9008981c49e27ed684764b6ed7ceaac83f0afe375bc3e1b604dc1d6952f617ff",
+  "audit": "docs/FLASH-INSTALL.md: every NAND command-register write in the driver was enumerated; only these two functions send erase/program opcodes. Read path (FUN_0012067e) never reaches them."
+}
